@@ -1,7 +1,10 @@
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyModifiers},
+    style::Attribute::Bold,
+};
 use ratatui::{
     DefaultTerminal,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph},
@@ -18,6 +21,7 @@ struct Editor {
     row_offset: usize,
     col_offset: usize,
     filename: Option<String>,
+    show_sidebar: bool,
 }
 
 impl Default for Editor {
@@ -29,6 +33,7 @@ impl Default for Editor {
             filename: None,
             row_offset: 0,
             col_offset: 0,
+            show_sidebar: true,
         }
     }
 }
@@ -49,6 +54,7 @@ impl Editor {
                     filename: Some(filename),
                     row_offset: 0,
                     col_offset: 0,
+                    show_sidebar: true,
                 }
             }
             Err(_) => {
@@ -60,6 +66,7 @@ impl Editor {
                     filename: Some(filename),
                     row_offset: 0,
                     col_offset: 0,
+                    show_sidebar: true,
                 }
             }
         }
@@ -98,6 +105,47 @@ impl Editor {
             .iter()
             .map(|line| line.split_whitespace().count())
             .sum()
+    }
+
+    fn get_active_heading_idx(&self) -> Option<usize> {
+        for idx in (0..=self.cursor_y).rev() {
+            if let Some(line) = self.lines.get(idx) {
+                if line.starts_with("# ") || line.starts_with("## ") {
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    }
+
+    fn jump_to_prev_heading(&mut self) {
+        if self.cursor_y == 0 {
+            return;
+        }
+        for idx in (0..self.cursor_y).rev() {
+            if let Some(line) = self.lines.get(idx) {
+                if line.starts_with("# ") || line.starts_with("## ") {
+                    self.cursor_y = idx;
+                    self.cursor_x = line.len();
+                    return;
+                }
+            }
+        }
+    }
+
+    fn jump_to_next_heading(&mut self) {
+        if self.cursor_y + 1 >= self.lines.len() {
+            return;
+        }
+        for idx in (self.cursor_y + 1)..self.lines.len() {
+            if let Some(line) = self.lines.get(idx) {
+                if line.starts_with("# ") || line.starts_with("## ") {
+                    self.cursor_y = idx;
+                    self.cursor_x = line.len();
+                    return;
+                }
+            }
+        }
     }
 
     fn insert_char(&mut self, ch: char) {
@@ -194,6 +242,24 @@ fn run_app(terminal: &mut DefaultTerminal, editor: &mut Editor) -> io::Result<()
                 continue; //stops process so you don't type an S when saving
             }
 
+            //check for previous heading command
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Up {
+                editor.jump_to_prev_heading();
+                continue;
+            }
+
+            //check for next heading command
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Down {
+                editor.jump_to_next_heading();
+                continue;
+            }
+
+            //toggle sidebar
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('b') {
+                editor.show_sidebar = !editor.show_sidebar;
+                continue;
+            }
+
             match key.code {
                 KeyCode::Char(c) => editor.insert_char(c),
                 KeyCode::Enter => editor.insert_newline(),
@@ -211,15 +277,57 @@ fn run_app(terminal: &mut DefaultTerminal, editor: &mut Editor) -> io::Result<()
 fn ui(f: &mut ratatui::Frame, editor: &mut Editor) {
     let size = f.area();
 
-    //split screen: main editing zone (95% height), status bar (1 cell high)
+    //Split workspace and status bar
     let chunks = Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
+        .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(size);
 
-    let main_area = chunks[0];
+    let workspace_area = chunks[0];
     let status_area = chunks[1];
 
+    //split sidebar and editor
+    let sidebar_constraint = if editor.show_sidebar {
+        Constraint::Length(24)
+    } else {
+        Constraint::Length(0)
+    };
+
+    let workspace_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([sidebar_constraint, Constraint::Min(0)])
+        .split(workspace_area);
+
+    let sidebar_area = workspace_cols[0];
+    let editor_area = workspace_cols[1];
+
+    // --- render sidebar ---
+    if editor.show_sidebar {
+        let active_heading_line_idx = editor.get_active_heading_idx();
+        let mut outline_lines: Vec<Line> = Vec::new();
+        for (idx, line) in editor.lines.iter().enumerate() {
+            let is_active = Some(idx) == active_heading_line_idx;
+            if line.starts_with("# ") {
+                let content = line.strip_prefix("# ").unwrap_or(line);
+                let mut style = Style::default();
+                if is_active {
+                    style = style.add_modifier(Modifier::BOLD).fg(Color::Cyan);
+                }
+                outline_lines.push(Line::from(Span::styled(format!("{}", content), style)));
+            } else if line.starts_with("## ") {
+                let content = line.strip_prefix("## ").unwrap_or(line);
+                let mut style = Style::default();
+                if is_active {
+                    style = style.add_modifier(Modifier::BOLD).fg(Color::Cyan);
+                }
+                outline_lines.push(Line::from(Span::styled(format!("  {}", content), style)))
+            }
+        }
+
+        let sidebar_block = Block::default().title(" Outine ").borders(Borders::ALL);
+        let sidebar_paragraph = Paragraph::new(Text::from(outline_lines)).block(sidebar_block);
+        f.render_widget(sidebar_paragraph, sidebar_area);
+    }
     // --- render main editor panel ---
     let title = match &editor.filename {
         Some(name) => format!(
@@ -231,8 +339,8 @@ fn ui(f: &mut ratatui::Frame, editor: &mut Editor) {
 
     //create an outer frame container
     let block = Block::default().title(title).borders(Borders::ALL);
-    let inner_area = block.inner(main_area);
-    f.render_widget(block, main_area);
+    let inner_area = block.inner(editor_area);
+    f.render_widget(block, editor_area);
 
     //update viewport
     let width = inner_area.width as usize;
