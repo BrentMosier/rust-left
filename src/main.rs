@@ -240,24 +240,42 @@ fn ui(f: &mut ratatui::Frame, editor: &mut Editor) {
     editor.scroll(width, height);
 
     //slice lines array to build the window view representation
-    let visible_lines: Vec<String> = editor
+    //dynamic markdown syntax highlighter parser loop
+    let visible_lines: Vec<Line> = editor
         .lines
         .iter()
         .skip(editor.row_offset)
         .take(height)
         .map(|line| {
-            //slice horizontally if lines wrap past width bounds
-            if line.len() > editor.col_offset {
+            //apply horizontal scroll limits
+            let display_text = if line.len() > editor.col_offset {
                 let end = (editor.col_offset + width).min(line.len());
                 line[editor.col_offset..end].to_string()
             } else {
                 String::new()
+            };
+
+            //evaluate prefix syntax rules
+            if line.starts_with("## ") {
+                Line::from(Span::styled(
+                    display_text,
+                    Style::default().fg(Color::Blue), // .add_modifier(Modifier::BOLD),
+                ))
+            } else if line.starts_with("# ") {
+                Line::from(Span::styled(
+                    display_text,
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::raw(display_text))
             }
         })
         .collect();
 
     //convert lines into printable text lines
-    let paragraph = Paragraph::new(Text::from(visible_lines.join("\n")));
+    let paragraph = Paragraph::new(Text::from(visible_lines));
     f.render_widget(paragraph, inner_area);
 
     // --- Render status bar panel ---
